@@ -40,6 +40,7 @@ typedef struct {
     int cursor_y;
     int cursor_x;
     char word_to_guess[COLS + 2];
+    Colors h_keys[26];
     Cell cells[ROWS][COLS];
     FILE *file;
 } GameData;
@@ -48,7 +49,7 @@ void render_grid(GameData *game_data);
 void set_n_words(GameData *game_data);
 void set_file(GameData *game_data, const char * const filename);
 void set_guess_word(GameData *game_data);
-void print_char_color(char c, Colors color);
+void print_char_color(char c, Colors color, bool formatted);
 int get_random_index(GameData *game_data);
 void init_game_data(GameData *game_data, const char * const filename);
 void process_input(GameData *game_data);
@@ -178,7 +179,7 @@ void set_guess_word(GameData *game_data){
     }
 }
 
-void print_char_color(char c, Colors color){
+void print_char_color(char c, Colors color, bool formatted){
     char *color_code;
     char *reset_code = "\033[0m";
 
@@ -197,7 +198,10 @@ void print_char_color(char c, Colors color){
             break;
     }
 
-    printf("│ %s%c%s │ ", color_code, c, reset_code);
+    if(formatted)
+        printf("│ %s%c%s │ ", color_code, c, reset_code);
+    else 
+        printf("%s%c%s", color_code, c, reset_code);
 }
 
 void render_grid(GameData *game_data){
@@ -220,7 +224,7 @@ void render_grid(GameData *game_data){
     printf("\033[2J");
 
     printf("\033[%d;%dH", start_y, start_x + (grid_width/2) - 7);
-    printf("WORDLE C - TUI");
+    printf("WORDLE C - TUI\n");
     
     start_y += 2;
 
@@ -232,14 +236,20 @@ void render_grid(GameData *game_data){
         printf("\033[%d;%dH", start_y++, start_x);
         for (int c = 0; c < COLS; c++) {
             Cell cell = game_data->cells[r][c];
-            print_char_color(cell.letter, cell.color);
+            print_char_color(cell.letter, cell.color, true);
         }
 
         printf("\033[%d;%dH", start_y++, start_x);
         for (int c = 0; c < COLS; c++) printf("└───┘ ");
     }
+
+    start_y += 2;
     
-    printf("\n\n");
+    printf("\033[%d;%dH", start_y, start_x-10);
+    for(int i = 0; i < 26; i++){
+        print_char_color('A'+i, game_data->h_keys[i], false);
+        putchar(' ');
+    }
 }
 
 void cleanup_game(GameData *game_data) {
@@ -302,8 +312,10 @@ void set_hints(GameData *game_data){
 
     for(int i = 0; i < COLS; i++){
         game_data->cells[r][i].color = GRAY;
+        game_data->h_keys[game_data->cells[r][i].letter-'a'] = GRAY;
         if(game_data->cells[r][i].letter == secret[i]){
             game_data->cells[r][i].color = GREEN;
+            game_data->h_keys[game_data->cells[r][i].letter-'a'] = GREEN;
             link[i] = true;
         }
     }
@@ -316,6 +328,7 @@ void set_hints(GameData *game_data){
         for(int j = 0; j < COLS; j++){
             if(secret[j] == lettera_utente && !link[j]){
                 game_data->cells[r][i].color = YELLOW;
+                game_data->h_keys[game_data->cells[r][i].letter-'a'] = YELLOW;
                 link[j] = true;
                 break;
             }

@@ -307,29 +307,52 @@ bool validate_word(GameData game_data){
 
 void set_hints(GameData *game_data){
     int r = game_data->cursor_y;
+    
     bool link[COLS] = {false};
+    
     char *secret = game_data->word_to_guess;
 
     for(int i = 0; i < COLS; i++){
+        char user_char = game_data->cells[r][i].letter;
+        
+        int key_idx = tolower(user_char) - 'a';
+
         game_data->cells[r][i].color = GRAY;
-        game_data->h_keys[game_data->cells[r][i].letter-'a'] = GRAY;
-        if(game_data->cells[r][i].letter == secret[i]){
+
+        if(key_idx >= 0 && key_idx < 26) {
+            if (game_data->h_keys[key_idx] == DEFAULT) {
+                game_data->h_keys[key_idx] = GRAY;
+            }
+        }
+
+        if(user_char == secret[i]){
             game_data->cells[r][i].color = GREEN;
-            game_data->h_keys[game_data->cells[r][i].letter-'a'] = GREEN;
             link[i] = true;
+
+            if(key_idx >= 0 && key_idx < 26) {
+                game_data->h_keys[key_idx] = GREEN;
+            }
         }
     }
 
     for(int i = 0; i < COLS; i++){
         if(game_data->cells[r][i].color == GREEN) continue;
 
-        char lettera_utente = game_data->cells[r][i].letter;
+        char user_char = game_data->cells[r][i].letter;
+        int key_idx = tolower(user_char) - 'a';
 
         for(int j = 0; j < COLS; j++){
-            if(secret[j] == lettera_utente && !link[j]){
+            if(secret[j] == user_char && !link[j]){
+                
                 game_data->cells[r][i].color = YELLOW;
-                game_data->h_keys[game_data->cells[r][i].letter-'a'] = YELLOW;
                 link[j] = true;
+                
+                if(key_idx >= 0 && key_idx < 26) {
+                    if (game_data->h_keys[key_idx] != GREEN) {
+                        game_data->h_keys[key_idx] = YELLOW;
+                    }
+                }
+
                 break;
             }
         }

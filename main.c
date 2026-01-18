@@ -33,6 +33,7 @@ typedef struct {
     Colors color;
 } Cell;
 
+// TODO: caricare il file in memoria ram eliminando il tempo di accesso a disco 
 typedef struct {
     State state;
     bool running;
@@ -67,6 +68,7 @@ int main(void){
 
     GameData game_data;
     
+start:
     init_game_data(&game_data, FILENAME);
 
     if (game_data.file == NULL) {
@@ -81,12 +83,16 @@ int main(void){
     while(game_data.running){
         render_grid(&game_data);
         process_input(&game_data);
-        usleep(50000);
     }
 
     render_grid(&game_data);
 
     draw_result_menu(&game_data);
+    while(1) {
+        char c = getchar();
+        if (c == 27) break;
+        if(c == 'r') goto start;
+    }
 
     cleanup_game(&game_data);
 
@@ -401,11 +407,7 @@ void draw_result_menu(GameData *game_data) {
     
     printf("      \033[100;97m %-21s \033[0m\n", msg); 
     
-    printf("      \033[100;97m %-21s \033[0m\n", " Premere ESC per uscire"); 
+    printf("      \033[100;97m %-21s \033[0m\n", " Premere ESC per uscire o R per iniziare"); 
     printf("\n");
 
-    while(1) {
-        char c = getchar();
-        if (c == 27) break;
-    }
 }

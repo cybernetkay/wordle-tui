@@ -48,7 +48,7 @@ void render_grid(GameData *game_data);
 void set_n_words(GameData *game_data);
 void set_file(GameData *game_data, const char * const filename);
 void set_guess_word(GameData *game_data);
-void print_letter_color(char c, Colors color);
+void print_char_color(char c, Colors color);
 int get_random_index(GameData *game_data);
 void init_game_data(GameData *game_data, const char * const filename);
 void process_input(GameData *game_data);
@@ -178,7 +178,7 @@ void set_guess_word(GameData *game_data){
     }
 }
 
-void print_letter_color(char c, Colors color){
+void print_char_color(char c, Colors color){
     char *color_code;
     char *reset_code = "\033[0m";
 
@@ -232,7 +232,7 @@ void render_grid(GameData *game_data){
         printf("\033[%d;%dH", start_y++, start_x);
         for (int c = 0; c < COLS; c++) {
             Cell cell = game_data->cells[r][c];
-            print_letter_color(cell.letter, cell.color);
+            print_char_color(cell.letter, cell.color);
         }
 
         printf("\033[%d;%dH", start_y++, start_x);

@@ -1,4 +1,5 @@
 #include <ctype.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdbool.h>
 #include <stdlib.h>
@@ -10,404 +11,457 @@
 
 #define ROWS 6
 #define COLS 5
-
-#define FILENAME "parole_5"
+#define FILENAME "parole_5" 
+#define MAX_WORDS 15000         
 
 struct termios orig_termios;
+
+typedef enum {
+    KEY_NULL = 0,
+    CTRL_C = 3,
+    BACKSPACE = 127,
+    ENTER = 10,
+    ESC = 27,
+    ARROW_UP = 1000,
+    ARROW_DOWN,
+    ARROW_LEFT,
+    ARROW_RIGHT
+} Key;
 
 typedef enum {
     DEFAULT = 0,
     GRAY,
     GREEN,
     YELLOW,
+    RED, 
 } Colors;
 
 typedef enum {
     WIN,
     IDLE,
     LOSS,
+    SETTINGS,
 } State;
+
+typedef struct {
+    bool hardMode;
+} Settings;
 
 typedef struct {
     char letter;
     Colors color;
 } Cell;
 
-// TODO: caricare il file in memoria ram eliminando il tempo di accesso a disco 
 typedef struct {
     State state;
+    Settings settings;
     bool running;
-    int n_words; 
+    bool restart_requested;
+    
+    char dictionary[MAX_WORDS][COLS + 1];
+    int dict_count;
+
     int cursor_y;
     int cursor_x;
     char word_to_guess[COLS + 2];
     Colors h_keys[26];
     Cell cells[ROWS][COLS];
-    FILE *file;
 } GameData;
 
-void render_grid(GameData *game_data);
-void set_n_words(GameData *game_data);
-void set_file(GameData *game_data, const char * const filename);
-void set_guess_word(GameData *game_data);
-void print_char_color(char c, Colors color, bool formatted);
-int get_random_index(GameData *game_data);
-void init_game_data(GameData *game_data, const char * const filename);
-void process_input(GameData *game_data);
-void cleanup_game(GameData *game_data);
-void update_state(GameData *game_data);
-bool validate_word(GameData game_data);
-void set_hints(GameData *game_data);
-void disable_raw_mode();
+void init_game(GameData *gd);
+void load_dictionary(GameData *gd, const char *filename);
+void pick_secret_word(GameData *gd);
+void render_master(GameData *gd); 
+void render_grid(GameData *gd);
+void render_settings(GameData *gd);
+void render_result(GameData *gd);
+void process_input(GameData *gd);
+int  read_key(); 
+void set_hints(GameData *gd);
+void update_state(GameData *gd);
+bool validate_word_dictionary(GameData *gd);
+bool validate_word_hard_mode(GameData *gd);
+void show_toast(char *msg, Colors color);
 void enable_raw_mode();
-void draw_result_menu(GameData *game_data);
+void disable_raw_mode();
+char* get_ansi_color(Colors color, bool is_background);
 
-int main(void){
+int main(void) {
     srand(time(NULL));
     enable_raw_mode();
 
-    GameData game_data;
-    
-start:
-    init_game_data(&game_data, FILENAME);
+    GameData gd;
+    gd.dict_count = 0; 
+    load_dictionary(&gd, FILENAME);
 
-    if (game_data.file == NULL) {
-        return 1; 
+    if (gd.dict_count == 0) {
+        disable_raw_mode();
+        fprintf(stderr, "Errore: File '%s' non trovato o vuoto.\n", FILENAME);
+        return 1;
     }
 
-    set_guess_word(&game_data);
+    do {
+        init_game(&gd); 
+        
+        while (gd.running) {
+            render_master(&gd);
+            process_input(&gd);
+            usleep(10000); 
+        }
 
-    // printf("Debug - Parola scelta: %s\n", game_data.word_to_guess);
-    // usleep(1000*1000);
+        render_grid(&gd); 
+        render_result(&gd);
 
-    while(game_data.running){
-        render_grid(&game_data);
-        process_input(&game_data);
-    }
+        while (1) {
+            int c = read_key();
+            if (c == ESC) { gd.restart_requested = false; break; }
+            if (c == 'r' || c == 'R') { gd.restart_requested = true; break; }
+        }
 
-    render_grid(&game_data);
-
-    draw_result_menu(&game_data);
-    while(1) {
-        char c = getchar();
-        if (c == 27) break;
-        if(c == 'r') goto start;
-    }
-
-    cleanup_game(&game_data);
+    } while (gd.restart_requested);
 
     disable_raw_mode();
-
+    printf("\033[2J\033[H"); 
     return 0;
 }
 
 void disable_raw_mode() {
     tcsetattr(STDIN_FILENO, TCSAFLUSH, &orig_termios);
-    printf("\033[?25h"); 
+    printf("\033[?25h");
 }
 
 void enable_raw_mode() {
     tcgetattr(STDIN_FILENO, &orig_termios);
     atexit(disable_raw_mode);
-
     struct termios raw = orig_termios;
-    
-    raw.c_lflag &= ~(ECHO | ICANON);
-    
+    raw.c_lflag &= ~(ECHO | ICANON | ISIG); 
+    raw.c_cc[VMIN] = 0;  
+    raw.c_cc[VTIME] = 1; 
     tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw);
-
     printf("\033[?25l");
 }
 
-void init_game_data(GameData *game_data, const char * const filename){
-    if(game_data == NULL) return;
-
-    memset(game_data, 0, sizeof(GameData));
-
-    for(int i = 0; i < ROWS; i++){
-        for(int j = 0; j < COLS; j++){
-            game_data->cells[i][j].letter = ' ';
-        }
+int read_key() {
+    int nread;
+    char c;
+    while ((nread = read(STDIN_FILENO, &c, 1)) != 1) {
+        if (nread == -1 && errno != EAGAIN) return KEY_NULL;
+        if (nread == 0) return KEY_NULL; 
     }
-
-    set_file(game_data, filename);
-    set_n_words(game_data);
-
-    game_data->running = true;
-    game_data->state = IDLE;
-
-    if(game_data->file) rewind(game_data->file);
-}
-
-void set_file(GameData *game_data, const char * const filename){
-    game_data->file = fopen(filename, "r");
-    if(game_data->file == NULL){
-        fprintf(stderr, "Errore: Impossibile aprire il file '%s'\n", filename);
-    }
-}
-
-void set_n_words(GameData *game_data){
-    if(game_data->file == NULL) return;
-    
-    game_data->n_words = 0;
-    char line[256];
-    
-    while(fgets(line, sizeof(line), game_data->file) != NULL){
-        if (strlen(line) > 1) {
-            game_data->n_words++;
-        }
-    }
-}
-
-int get_random_index(GameData *game_data){
-    if(game_data->file == NULL || game_data->n_words == 0) return 0;
-    return rand() % game_data->n_words;
-}
-
-void set_guess_word(GameData *game_data){
-    if(game_data->file == NULL) return;
-
-    rewind(game_data->file);
-    
-    int target_index = get_random_index(game_data);
-    
-    char temp_buffer[100]; 
-
-    for(int i = 0; i < target_index; i++){
-        if(fgets(temp_buffer, sizeof(temp_buffer), game_data->file) == NULL){
-            rewind(game_data->file);
-            break;
-        }
-    }
-
-    if(fgets(game_data->word_to_guess, sizeof(game_data->word_to_guess), game_data->file) != NULL){
-        game_data->word_to_guess[strcspn(game_data->word_to_guess, "\r\n")] = 0;
-    }
-}
-
-void print_char_color(char c, Colors color, bool formatted){
-    char *color_code;
-    char *reset_code = "\033[0m";
-
-    switch(color){
-        case GREEN:
-            color_code = "\033[1;32m"; // Verde testo
-            break;
-        case YELLOW:
-            color_code = "\033[1;33m"; // Giallo testo
-            break;
-        case GRAY:
-            color_code = "\033[1;90m"; // Grigio scuro testo
-            break;
-        default: 
-            color_code = "\033[0m";    // Default
-            break;
-    }
-
-    if(formatted)
-        printf("│ %s%c%s │ ", color_code, c, reset_code);
-    else 
-        printf("%s%c%s", color_code, c, reset_code);
-}
-
-void render_grid(GameData *game_data){
-    struct winsize w;
-    ioctl(STDOUT_FILENO, TIOCGWINSZ, &w);
-    
-    int term_rows = w.ws_row;
-    int term_cols = w.ws_col;
-
-    int grid_width = COLS * 6; 
-    int grid_height = (ROWS * 3) + 4;
-
-    int start_y = (term_rows - grid_height) / 2;
-    if (start_y < 1) start_y = 1;
-
-    int start_x = (term_cols - grid_width) / 2;
-    if (start_x < 1) start_x = 1;
-
-
-    printf("\033[2J");
-
-    printf("\033[%d;%dH", start_y, start_x + (grid_width/2) - 7);
-    printf("WORDLE C - TUI\n");
-    
-    start_y += 2;
-
-    for (int r = 0; r < ROWS; r++) {
-        
-        printf("\033[%d;%dH", start_y++, start_x);
-        for (int c = 0; c < COLS; c++) printf("┌───┐ ");
-
-        printf("\033[%d;%dH", start_y++, start_x);
-        for (int c = 0; c < COLS; c++) {
-            Cell cell = game_data->cells[r][c];
-            print_char_color(cell.letter, cell.color, true);
-        }
-
-        printf("\033[%d;%dH", start_y++, start_x);
-        for (int c = 0; c < COLS; c++) printf("└───┘ ");
-    }
-
-    start_y += 2;
-    
-    printf("\033[%d;%dH", start_y, start_x-10);
-    for(int i = 0; i < 26; i++){
-        print_char_color('A'+i, game_data->h_keys[i], false);
-        putchar(' ');
-    }
-}
-
-void cleanup_game(GameData *game_data) {
-    if (game_data->file != NULL) {
-        fclose(game_data->file);
-        game_data->file = NULL;
-    }
-}
-
-void process_input(GameData *game_data){
-    if(game_data == NULL) return;
-
-    char c = getchar();
-
-    if(c == 10 && game_data->cursor_y < ROWS && validate_word(*game_data)){
-        set_hints(game_data);
-        update_state(game_data);
-        game_data->cursor_y++;
-        game_data->cursor_x = 0;
-    }
-
-    else if(c == 27) game_data->running = false;
-
-    else if (c == 127 || c == 8){
-        if(game_data->cursor_x > 0) game_data->cursor_x--;
-        game_data->cells[game_data->cursor_y][game_data->cursor_x].letter = ' ';
-    }
-
-    if(!isalpha(c)) return;
-
-    if(game_data->cursor_x < COLS){
-        game_data->cells[game_data->cursor_y][game_data->cursor_x++].letter = c;
-    }
-}
-
-bool validate_word(GameData game_data){
-    rewind(game_data.file);
-
-    char current_guess[COLS+1];
-
-    for(int i = 0; i < COLS; i++){
-        current_guess[i] = game_data.cells[game_data.cursor_y][i].letter;
-    }
-    current_guess[COLS] = '\0';
-
-    char line[COLS+1];
-    while(fgets(line, sizeof(line), game_data.file) != NULL){
-        line[COLS] = '\0';
-        if(strcmp(line, current_guess) == 0) return true;
-    }
-
-    rewind(game_data.file);
-    return false;
-}
-
-void set_hints(GameData *game_data){
-    int r = game_data->cursor_y;
-    
-    bool link[COLS] = {false};
-    
-    char *secret = game_data->word_to_guess;
-
-    for(int i = 0; i < COLS; i++){
-        char user_char = game_data->cells[r][i].letter;
-        
-        int key_idx = tolower(user_char) - 'a';
-
-        game_data->cells[r][i].color = GRAY;
-
-        if(key_idx >= 0 && key_idx < 26) {
-            if (game_data->h_keys[key_idx] == DEFAULT) {
-                game_data->h_keys[key_idx] = GRAY;
+    if (c == '\x1b') {
+        char seq[3];
+        if (read(STDIN_FILENO, &seq[0], 1) != 1) return ESC;
+        if (read(STDIN_FILENO, &seq[1], 1) != 1) return ESC;
+        if (seq[0] == '[') {
+            switch (seq[1]) {
+                case 'A': return ARROW_UP;
+                case 'B': return ARROW_DOWN;
+                case 'C': return ARROW_RIGHT;
+                case 'D': return ARROW_LEFT;
             }
         }
-
-        if(user_char == secret[i]){
-            game_data->cells[r][i].color = GREEN;
-            link[i] = true;
-
-            if(key_idx >= 0 && key_idx < 26) {
-                game_data->h_keys[key_idx] = GREEN;
-            }
-        }
+        return ESC;
     }
-
-    for(int i = 0; i < COLS; i++){
-        if(game_data->cells[r][i].color == GREEN) continue;
-
-        char user_char = game_data->cells[r][i].letter;
-        int key_idx = tolower(user_char) - 'a';
-
-        for(int j = 0; j < COLS; j++){
-            if(secret[j] == user_char && !link[j]){
-                
-                game_data->cells[r][i].color = YELLOW;
-                link[j] = true;
-                
-                if(key_idx >= 0 && key_idx < 26) {
-                    if (game_data->h_keys[key_idx] != GREEN) {
-                        game_data->h_keys[key_idx] = YELLOW;
-                    }
-                }
-
-                break;
-            }
-        }
-    }
+    if (c == 127) return BACKSPACE;
+    if (c == 13) return ENTER;
+    return c;
 }
 
-void update_state(GameData *game_data){
-    if(game_data->cursor_y >= ROWS) {
-        game_data->state = LOSS;
-        game_data->running = false;
+void init_game(GameData *gd) {
+    gd->state = IDLE;
+    gd->running = true;
+    gd->cursor_x = 0;
+    gd->cursor_y = 0;
+    gd->restart_requested = false;
+    for(int i=0; i<ROWS; i++) {
+        for(int j=0; j<COLS; j++) {
+            gd->cells[i][j].letter = ' ';
+            gd->cells[i][j].color = DEFAULT;
+        }
+    }
+    for(int i=0; i<26; i++) gd->h_keys[i] = DEFAULT;
+    pick_secret_word(gd);
+}
+
+void load_dictionary(GameData *gd, const char *filename) {
+    FILE *f = fopen(filename, "r");
+    if (!f) return;
+    char line[64];
+    while(fgets(line, sizeof(line), f) && gd->dict_count < MAX_WORDS) {
+        line[strcspn(line, "\r\n")] = 0;
+        if (strlen(line) == COLS) {
+            for(int i=0; i<COLS; i++) line[i] = toupper(line[i]);
+            strcpy(gd->dictionary[gd->dict_count], line);
+            gd->dict_count++;
+        }
+    }
+    fclose(f);
+}
+
+void pick_secret_word(GameData *gd) {
+    if (gd->dict_count == 0) return;
+    int idx = rand() % gd->dict_count;
+    strcpy(gd->word_to_guess, gd->dictionary[idx]);
+}
+
+void process_input(GameData *gd) {
+    int key = read_key();
+    if (key == KEY_NULL) return;
+
+    if (gd->state == SETTINGS) {
+        if (key == ESC || key == '@') gd->state = IDLE;
+        else if (key == ENTER) gd->settings.hardMode = !gd->settings.hardMode;
         return;
     }
 
-    game_data->state = WIN;
-    for(int i = 0; i < COLS; i++){
-        if(game_data->cells[game_data->cursor_y][i].color != GREEN){
-            game_data->state = IDLE;
+    if (gd->state == IDLE) {
+        if (key == ESC || key == CTRL_C) { gd->running = false; return; }
+        if (key == '@') { gd->state = SETTINGS; return; }
+        if (key == BACKSPACE || key == 8) {
+            if (gd->cursor_x > 0) {
+                gd->cursor_x--;
+                gd->cells[gd->cursor_y][gd->cursor_x].letter = ' ';
+            }
             return;
+        }
+        if (key == ENTER) {
+            if (gd->cursor_x < COLS) { show_toast("Parola troppo corta!", RED); return; }
+            if (gd->settings.hardMode && !validate_word_hard_mode(gd)) return;
+            if (!validate_word_dictionary(gd)) return;
+
+            set_hints(gd);
+            update_state(gd);
+            if (gd->running) { gd->cursor_y++; gd->cursor_x = 0; }
+            return;
+        }
+        if (key >= 'a' && key <= 'z') key = toupper(key);
+        if (key >= 'A' && key <= 'Z') {
+            if (gd->cursor_x < COLS) {
+                gd->cells[gd->cursor_y][gd->cursor_x].letter = (char)key;
+                gd->cursor_x++;
+            }
+        }
+    }
+}
+
+bool validate_word_dictionary(GameData *gd) {
+    char guess[COLS + 1];
+    for(int i=0; i<COLS; i++) guess[i] = gd->cells[gd->cursor_y][i].letter;
+    guess[COLS] = '\0';
+    for(int i=0; i < gd->dict_count; i++) {
+        if (strcmp(gd->dictionary[i], guess) == 0) return true;
+    }
+    show_toast("Parola non nel dizionario!", RED);
+    return false;
+}
+
+bool validate_word_hard_mode(GameData *gd) {
+    if (gd->cursor_y == 0) return true; 
+    int r = gd->cursor_y;
+    int prev = r - 1;
+    char error_msg[100];
+
+    for(int i=0; i<COLS; i++) {
+        if (gd->cells[prev][i].color == GREEN) {
+            if (gd->cells[r][i].letter != gd->cells[prev][i].letter) {
+                snprintf(error_msg, 100, "Manca '%c' in pos %d!", gd->cells[prev][i].letter, i+1);
+                show_toast(error_msg, RED);
+                return false;
+            }
+        }
+    }
+    for(int i=0; i<COLS; i++) {
+        if (gd->cells[prev][i].color == YELLOW) {
+            char target = gd->cells[prev][i].letter;
+            bool found = false;
+            for(int j=0; j<COLS; j++) {
+                if (gd->cells[r][j].letter == target) { found = true; break; }
+            }
+            if (!found) {
+                snprintf(error_msg, 100, "Devi usare la lettera '%c'!", target);
+                show_toast(error_msg, RED);
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+void set_hints(GameData *gd) {
+    int r = gd->cursor_y;
+    char *secret = gd->word_to_guess;
+    bool link[COLS] = {false};
+
+    for(int i=0; i<COLS; i++) {
+        gd->cells[r][i].color = GRAY; 
+        char c = gd->cells[r][i].letter;
+        int k_idx = c - 'A';
+        if (k_idx >= 0 && k_idx < 26 && gd->h_keys[k_idx] == DEFAULT) gd->h_keys[k_idx] = GRAY;
+
+        if (c == secret[i]) {
+            gd->cells[r][i].color = GREEN;
+            if (k_idx >= 0 && k_idx < 26) gd->h_keys[k_idx] = GREEN;
+            link[i] = true; 
         }
     }
 
-
-    game_data->running = false;
+    for(int i=0; i<COLS; i++) {
+        if (gd->cells[r][i].color == GREEN) continue;
+        char c = gd->cells[r][i].letter;
+        int k_idx = c - 'A';
+        for(int j=0; j<COLS; j++) {
+            if (secret[j] == c && !link[j]) {
+                gd->cells[r][i].color = YELLOW;
+                if (k_idx >= 0 && k_idx < 26 && gd->h_keys[k_idx] != GREEN) gd->h_keys[k_idx] = YELLOW;
+                link[j] = true;
+                break; 
+            }
+        }
+    }
 }
 
-void draw_result_menu(GameData *game_data) {
-    
-    char *color;
-    char *title;
-    char msg[100];
+void update_state(GameData *gd) {
+    bool all_green = true;
+    for(int i=0; i<COLS; i++) {
+        if (gd->cells[gd->cursor_y][i].color != GREEN) all_green = false;
+    }
+    if (all_green) { gd->state = WIN; gd->running = false; return; }
+    if (gd->cursor_y >= ROWS - 1) { gd->state = LOSS; gd->running = false; return; }
+}
 
-    if (game_data->state == WIN) {
-        color = "\033[42;1;37m"; // Sfondo Verde, Testo Bianco Bold
-        title = " VITTORIA! ";
-        sprintf(msg, "Hai indovinato in %d tentativi!", game_data->cursor_y);
+char* get_ansi_color(Colors color, bool is_background) {
+    if (is_background) {
+        // Colori per le Celle (Sfondo solido)
+        switch(color) {
+            case GREEN:  return "\033[38;5;255;48;5;28;1m";  // Forest Green
+            case YELLOW: return "\033[38;5;255;48;5;178;1m"; // Gold
+            case RED:    return "\033[38;5;255;48;5;160;1m"; // Red Error
+            case GRAY:   return "\033[38;5;255;48;5;240;1m"; // Dark Gray
+            default:     return "\033[0m";
+        }
     } else {
-        color = "\033[41;1;37m"; // Sfondo Rosso, Testo Bianco Bold
-        title = " HAI PERSO ";
-        sprintf(msg, "La parola era: %s", game_data->word_to_guess);
+        // Colori per la Tastiera (Solo testo, Foreground)
+        switch(color) {
+            case GREEN:  return "\033[38;5;46;1m";   // Bright Green Text
+            case YELLOW: return "\033[38;5;226;1m";  // Bright Yellow Text
+            case RED:    return "\033[38;5;196;1m";  // Bright Red Text
+            case GRAY:   return "\033[38;5;240;1m";  // Dark Gray Text
+            default:     return "\033[38;5;250m";    // Default Light Gray
+        }
+    }
+}
+
+void render_master(GameData *gd) {
+    if (gd->state == SETTINGS) render_settings(gd);
+    else render_grid(gd);
+}
+
+void render_grid(GameData *gd) {
+    struct winsize w;
+    ioctl(STDOUT_FILENO, TIOCGWINSZ, &w);
+    
+    int grid_w = COLS * 8; 
+    int grid_h = (ROWS * 3) + 6; 
+    int sy = (w.ws_row - grid_h) / 2;
+    int sx = (w.ws_col - grid_w) / 2;
+    if (sy < 1) sy = 1; if (sx < 1) sx = 1;
+
+    printf("\033[2J"); 
+    printf("\033[%d;%dH\033[1mWORDLE C\033[0m (Premi @ per Impostazioni)", sy, (w.ws_col/2) - 15);
+    sy += 2;
+
+    for(int r=0; r<ROWS; r++) {
+        printf("\033[%d;%dH", sy++, sx);
+        for(int c=0; c<COLS; c++){
+            Cell cell = gd->cells[r][c];
+            if (cell.color != DEFAULT) printf("%s┌─────┐\033[0m ", get_ansi_color(cell.color, true));
+            else printf("\033[90m┌─────┐\033[0m ");
+        }
+        
+        printf("\033[%d;%dH", sy++, sx);
+        for(int c=0; c<COLS; c++) {
+            Cell cell = gd->cells[r][c];
+            if (cell.color != DEFAULT) {
+                printf("%s│  %c  │\033[0m ", get_ansi_color(cell.color, true), cell.letter);
+            } else {
+                if (cell.letter != ' ') printf("\033[90m│\033[0m\033[1m  %c  \033[0m\033[90m│\033[0m ", cell.letter);
+                else printf("\033[90m│     │\033[0m ");
+            }
+        }
+
+        printf("\033[%d;%dH", sy++, sx);
+        for(int c=0; c<COLS; c++) {
+            Cell cell = gd->cells[r][c];
+            if (cell.color != DEFAULT) printf("%s└─────┘\033[0m ", get_ansi_color(cell.color, true));
+            else printf("\033[90m└─────┘\033[0m ");
+        }
     }
 
-    printf("\n");
-    printf("      %s%s\033[0m\n", color, "                       "); // Barra superiore
-    printf("      %s%s%s%s%s\n", color, "      ", title, "      ", "\033[0m"); // Titolo centrato
-    printf("      %s%s\033[0m\n", color, "                       "); // Spazio
+    sy += 2; 
+    int kbd_sx = (w.ws_col - 52) / 2;
+    if (kbd_sx < 1) kbd_sx = 1;
     
-    printf("      \033[100;97m %-21s \033[0m\n", msg); 
-    
-    printf("      \033[100;97m %-21s \033[0m\n", " Premere ESC per uscire o R per iniziare"); 
-    printf("\n");
+    printf("\033[%d;%dH", sy, kbd_sx);
 
+    for (int i = 0; i < 26; i++) {
+        Colors k_col = gd->h_keys[i];
+        char *ansi = get_ansi_color(k_col, false);
+        
+        printf("%s%c\033[0m ", ansi, 'A' + i);
+    }
+    
+    fflush(stdout);
+}
+
+void render_settings(GameData *gd) {
+    struct winsize w;
+    ioctl(STDOUT_FILENO, TIOCGWINSZ, &w);
+    int sx = (w.ws_col - 40) / 2;
+    int sy = (w.ws_row - 8) / 2;
+    char *bg = "\033[100m"; char *fg = "\033[97m"; char *rst = "\033[0m";
+
+    printf("\033[2J");
+    printf("\033[%d;%dH%s%s┌──────────────────────────────────────┐%s", sy, sx, bg, fg, rst);
+    printf("\033[%d;%dH%s%s│             IMPOSTAZIONI             │%s", sy+1, sx, bg, fg, rst);
+    printf("\033[%d;%dH%s%s│──────────────────────────────────────│%s", sy+2, sx, bg, fg, rst);
+    printf("\033[%d;%dH%s%s│                                      │%s", sy+3, sx, bg, fg, rst);
+    char status[64];
+    if (gd->settings.hardMode) sprintf(status, "\033[1;32m[ ON  ]");
+    else sprintf(status, "\033[1;31m[ OFF ]");
+    printf("\033[%d;%dH%s%s│      HARD MODE: %s%s%s       │%s", sy+4, sx, bg, fg, status, bg, fg, rst);
+    printf("\033[%d;%dH%s%s│                                      │%s", sy+5, sx, bg, fg, rst);
+    printf("\033[%d;%dH%s%s│   [INVIO] Cambia      [@/ESC] Esci   │%s", sy+6, sx, bg, fg, rst);
+    printf("\033[%d;%dH%s%s└──────────────────────────────────────┘%s", sy+7, sx, bg, fg, rst);
+    fflush(stdout);
+}
+
+void render_result(GameData *gd) {
+    struct winsize w;
+    ioctl(STDOUT_FILENO, TIOCGWINSZ, &w);
+    int sy = (w.ws_row / 2) - 2;
+    int sx = (w.ws_col / 2) - 15;
+    char *col = (gd->state == WIN) ? "\033[42;1;97m" : "\033[41;1;97m";
+    char msg[64];
+    
+    if (gd->state == WIN) sprintf(msg, "VITTORIA! (%d tentativi)", gd->cursor_y + 1);
+    else sprintf(msg, "PERSO! Parola: %s", gd->word_to_guess);
+
+    printf("\033[%d;%dH%s                              \033[0m", sy, sx, col);
+    printf("\033[%d;%dH%s  %-26s  \033[0m", sy+1, sx, col, msg);
+    printf("\033[%d;%dH%s                              \033[0m", sy+2, sx, col);
+    printf("\033[%d;%dH\033[100;97m  PREMI [R] RIAVVIA - [ESC] ESCI  \033[0m", sy+4, sx);
+    fflush(stdout);
+}
+
+void show_toast(char *message, Colors color) {
+    struct winsize w;
+    ioctl(STDOUT_FILENO, TIOCGWINSZ, &w);
+    int sx = (w.ws_col / 2) - (strlen(message)/2) - 2;
+    int sy = (w.ws_row / 2) - 2;
+
+    char *ansi = get_ansi_color(color, true);
+    printf("\033[%d;%dH%s  %s  \033[0m", sy, sx, ansi, message);
+    fflush(stdout);
+    usleep(1500000); 
+    tcflush(STDIN_FILENO, TCIFLUSH);
 }

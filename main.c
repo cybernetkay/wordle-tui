@@ -53,11 +53,18 @@ typedef struct {
 } Cell;
 
 typedef struct {
+    char message[128];
+    Colors bg_color;
+    bool active;
+} Toast;
+
+typedef struct {
     State state;
     Settings settings;
+    Toast toast;
     bool running;
     bool restart_requested;
-    
+
     char dictionary[MAX_WORDS][COLS + 1];
     int dict_count;
 
@@ -81,9 +88,11 @@ void set_hints(GameData *gd);
 void update_state(GameData *gd);
 bool validate_word_dictionary(GameData *gd);
 bool validate_word_hard_mode(GameData *gd);
-void show_toast(char *msg, Colors color);
+void show_toast(Toast toast);
 void enable_raw_mode();
 void disable_raw_mode();
+void set_toast(GameData *gd, char *message, Colors color);
+void clear_toast(GameData *gd);
 char* get_ansi_color(Colors color, bool is_background);
 
 int main(void) {
@@ -208,6 +217,8 @@ void process_input(GameData *gd) {
     int key = read_key();
     if (key == KEY_NULL) return;
 
+    clear_toast(gd);
+
     if (gd->state == SETTINGS) {
         if (key == ESC || key == '@') gd->state = IDLE;
         else if (key == ENTER) gd->settings.hardMode = !gd->settings.hardMode;
@@ -225,7 +236,7 @@ void process_input(GameData *gd) {
             return;
         }
         if (key == ENTER) {
-            if (gd->cursor_x < COLS) { show_toast("Parola troppo corta!", RED); return; }
+            if (gd->cursor_x < COLS) { set_toast(gd, "Parola troppo corta!", RED); return; }
             if (gd->settings.hardMode && !validate_word_hard_mode(gd)) return;
             if (!validate_word_dictionary(gd)) return;
 
@@ -251,7 +262,7 @@ bool validate_word_dictionary(GameData *gd) {
     for(int i=0; i < gd->dict_count; i++) {
         if (strcmp(gd->dictionary[i], guess) == 0) return true;
     }
-    show_toast("Parola non nel dizionario!", RED);
+    set_toast(gd, "Parola non nel dizionario!", RED);
     return false;
 }
 
@@ -265,7 +276,7 @@ bool validate_word_hard_mode(GameData *gd) {
         if (gd->cells[prev][i].color == GREEN) {
             if (gd->cells[r][i].letter != gd->cells[prev][i].letter) {
                 snprintf(error_msg, 100, "Manca '%c' in pos %d!", gd->cells[prev][i].letter, i+1);
-                show_toast(error_msg, RED);
+                set_toast(gd, error_msg, RED);
                 return false;
             }
         }
@@ -279,7 +290,7 @@ bool validate_word_hard_mode(GameData *gd) {
             }
             if (!found) {
                 snprintf(error_msg, 100, "Devi usare la lettera '%c'!", target);
-                show_toast(error_msg, RED);
+                set_toast(gd, error_msg, RED);
                 return false;
             }
         }
@@ -352,8 +363,14 @@ char* get_ansi_color(Colors color, bool is_background) {
 }
 
 void render_master(GameData *gd) {
-    if (gd->state == SETTINGS) render_settings(gd);
-    else render_grid(gd);
+    if (gd->state == SETTINGS){
+        render_settings(gd);
+        return;
+    }
+
+    render_grid(gd);
+
+    if(gd->toast.active) show_toast(gd->toast);
 }
 
 void render_grid(GameData *gd) {
@@ -453,15 +470,27 @@ void render_result(GameData *gd) {
     fflush(stdout);
 }
 
-void show_toast(char *message, Colors color) {
+void show_toast(Toast toast) {
     struct winsize w;
     ioctl(STDOUT_FILENO, TIOCGWINSZ, &w);
-    int sx = (w.ws_col / 2) - (strlen(message)/2) - 2;
+    int sx = (w.ws_col / 2) - (strlen(toast.message)/2) - 2;
     int sy = (w.ws_row / 2) - 2;
 
-    char *ansi = get_ansi_color(color, true);
-    printf("\033[%d;%dH%s  %s  \033[0m", sy, sx, ansi, message);
+    char *ansi = get_ansi_color(toast.bg_color, true);
+    printf("\033[%d;%dH%s  %s  \033[0m", sy, sx, ansi, toast.message);
     fflush(stdout);
-    usleep(1500000); 
     tcflush(STDIN_FILENO, TCIFLUSH);
+}
+
+void set_toast(GameData *gd, char *message, Colors color){
+    if(message == NULL) return;
+
+    strncpy(gd->toast.message, message, sizeof(gd->toast.message)-1);
+    gd->toast.message[sizeof(gd->toast.message)-1] = '\0';
+    gd->toast.bg_color = color;
+    gd->toast.active = true;
+}
+
+void clear_toast(GameData *gd){
+    gd->toast.active = false;
 }
